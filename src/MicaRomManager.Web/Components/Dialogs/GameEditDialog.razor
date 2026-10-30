@@ -1,0 +1,394 @@
+@using MicaRomManager.Core.Models
+@inject GameRepository Games
+@inject CoverStore Covers
+@inject LookupRepository Lookups
+@inject PlatformRepository Platforms
+@inject PathGuard Guard
+@inject IJSRuntime JS
+
+<Modal Title="@(IsNew ? "新建游戏" : "编辑游戏")" Width="820px" OnClose="CloseAsync">
+    <ChildContent>
+        @if (_error is not null)
+        {
+            <div class="alert danger">@_error</div>
+        }
+
+        <div class="form-grid">
+            <label class="field span2">
+                <span>标题 *</span>
+                <input type="text" @bind="_edit.Title" @bind:event="oninput" maxlength="300"/>
+            </label>
+
+            @if (IsNew)
+            {
+                <label class="field span2">
+                    <span>ROM 路径（容器内绝对路径，必须位于已登记库目录内）</span>
+                    <input type="text" @bind="_newRomPath" @bind:event="oninput"
+                           @onchange="OnNewPathChanged" placeholder="/roms/nes/Contra.nes"/>
+                </label>
+            }
+
+            <label class="field">
+                <span>平台</span>
+                <input type="text" list="platform-options" @bind="_edit.Platform" @bind:event="oninput"/>
+                <datalist id="platform-options">
+                    @foreach (var platform in _platforms)
+                    {
+                        <option value="@platform.Name"></option>
+                    }
+                </datalist>
+            </label>
+
+            <label class="field">
+                <span>类型</span>
+                <input type="text" list="genre-options" @bind="_edit.Genre"/>
+                <datalist id="genre-options">
+                    @foreach (var value in _genres) { <option value="@value"></option> }
+                </datalist>
+            </label>
+
+            <label class="field">
+                <span>区域</span>
+                <input type="text" list="region-options" @bind="_edit.Region"/>
+                <datalist id="region-options">
+                    @foreach (var value in _regions) { <option value="@value"></option> }
+                </datalist>
+            </label>
+
+            <label class="field">
+                <span>语言</span>
+                <input type="text" list="language-options" @bind="_edit.Language"/>
+                <datalist id="language-options">
+                    @foreach (var value in _languages) { <option value="@value"></option> }
+                </datalist>
+            </label>
+
+            <label class="field">
+                <span>特注</span>
+                <input type="text" @bind="_edit.SpecialNote" placeholder="如 汉化版"/>
+            </label>
+
+            <label class="field">
+                <span>发行商</span>
+                <input type="text" list="publisher-options" @bind="_edit.Publisher"/>
+                <datalist id="publisher-options">
+                    @foreach (var value in _publishers) { <option value="@value"></option> }
+                </datalist>
+            </label>
+
+            <label class="field">
+                <span>开发商</span>
+                <input type="text" list="developer-options" @bind="_edit.Developer"/>
+                <datalist id="developer-options">
+                    @foreach (var value in _developers) { <option value="@value"></option> }
+                </datalist>
+            </label>
+
+            <label class="field">
+                <span>发行年份</span>
+                <input type="number" min="1950" max="2100" @bind="_edit.ReleaseYear"/>
+            </label>
+
+            <label class="field">
+                <span>评分</span>
+                <select @bind="_edit.Rating">
+                    <option value="0">未评分</option>
+                    @for (var star = 1; star <= 5; star++)
+                    {
+                        <option value="@star">@(new string('★', star))</option>
+                    }
+                </select>
+            </label>
+
+            <label class="field">
+                <span>状态</span>
+                <select @bind="_edit.Status">
+                    @foreach (var status in GameStatus.All) { <option value="@status">@status</option> }
+                </select>
+            </label>
+
+            <label class="field checkbox-field">
+                <input type="checkbox" @bind="_edit.Favorite"/>
+                <span>收藏</span>
+            </label>
+
+            <label class="field span2">
+                <span>标签（逗号分隔）</span>
+                <input type="text" @bind="_edit.Tags" placeholder="如 汉化,经典"/>
+            </label>
+
+            <label class="field span2">
+                <span>备注 / 简介</span>
+                <textarea rows="4" @bind="_edit.Notes"></textarea>
+            </label>
+
+            <div class="field span2">
+                <span>封面</span>
+                <div class="cover-editor">
+                    @if (HasCover)
+                    {
+                        <img class="cover-preview" src="@CoverSource" alt="封面"/>
+                        <button type="button" class="btn ghost small" @onclick="RemoveCover">移除封面</button>
+                    }
+                    else
+                    {
+                        <div class="cover-preview placeholder">无封面</div>
+                    }
+                    <label class="btn ghost small file-btn">
+                        选择图片
+                        <InputFile OnChange="UploadCoverAsync" accept=".jpg,.jpeg,.png,.webp" class="hidden-input"/>
+                    </label>
+                    <span class="muted small">jpg / png / webp，≤ 10MB</span>
+                </div>
+            </div>
+
+            <div class="field span2 readonly-block">
+                <div><span class="muted">路径：</span>@_edit.RomPath</div>
+                <div><span class="muted">大小：</span>@_edit.FileSizeDisplay</div>
+                <div><span class="muted">指纹：</span><code>@(_edit.RomHash.Length > 24 ? _edit.RomHash[..24] + "…" : _edit.RomHash)</code></div>
+                <div><span class="muted">游玩：</span>@_edit.PlayCount 次 · @_edit.PlaySecondsDisplay</div>
+            </div>
+        </div>
+    </ChildContent>
+
+    <Footer>
+        <div class="modal-actions">
+            @if (!IsNew)
+            {
+                <button type="button" class="btn danger ghost" @onclick="DeleteAsync">从库中移除</button>
+            }
+            <div class="toolbar-spacer"></div>
+            <button type="button" class="btn ghost" @onclick="CloseAsync">取消</button>
+            <button type="button" class="btn primary" @onclick="SaveAsync" disabled="@_saving">保存</button>
+        </div>
+    </Footer>
+</Modal>
+
+@code {
+    [Parameter] public Game? Game { get; set; }
+    [Parameter] public bool IsNew { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback OnSaved { get; set; }
+
+    private Game _edit = new();
+    private string? _error;
+    private bool _saving;
+    private List<Platform> _platforms = new();
+    private IReadOnlyList<string> _regions = Array.Empty<string>();
+    private IReadOnlyList<string> _languages = Array.Empty<string>();
+    private IReadOnlyList<string> _genres = Array.Empty<string>();
+    private IReadOnlyList<string> _publishers = Array.Empty<string>();
+    private IReadOnlyList<string> _developers = Array.Empty<string>();
+    private string _originalCover = "";
+    private string _newRomPath = "";
+    private string _pendingCover = "";
+    private string _pendingPreview = "";
+    private int _coverVersion = 1;
+    private bool _deleteRequested;
+
+    private bool HasCover => !string.IsNullOrWhiteSpace(_pendingCover) ||
+                             (!IsNew && !string.IsNullOrWhiteSpace(_originalCover) && !_deleteRequested);
+
+    private string CoverSource => !string.IsNullOrWhiteSpace(_pendingPreview)
+        ? _pendingPreview
+        : $"/api/games/{_edit.Id}/cover?v={_coverVersion}";
+
+    protected override void OnInitialized()
+    {
+        _edit = Game?.Clone() ?? new Game();
+        _newRomPath = _edit.RomPath;
+        _originalCover = _edit.CoverFile;
+        _platforms = Platforms.ListAll().ToList();
+        _regions = Lookups.List(LookupRepository.Region);
+        _languages = Lookups.List(LookupRepository.Language);
+        _genres = Lookups.List(LookupRepository.Genre);
+        _publishers = Lookups.List(LookupRepository.Publisher);
+        _developers = Lookups.List(LookupRepository.Developer);
+    }
+
+    private async Task UploadCoverAsync(InputFileChangeEventArgs args)
+    {
+        _error = null;
+        var file = args.File;
+        if (file.Size > CoverStore.MaxBytes)
+        {
+            _error = "封面文件不能超过 10MB。";
+            return;
+        }
+
+        var extension = Path.GetExtension(file.Name).ToLowerInvariant();
+        if (!CoverStore.AllowedExtensions.Contains(extension))
+        {
+            _error = "只支持 jpg / png / webp。";
+            return;
+        }
+
+        try
+        {
+            await using var source = file.OpenReadStream(CoverStore.MaxBytes);
+            using var buffer = new MemoryStream();
+            await source.CopyToAsync(buffer);
+            buffer.Position = 0;
+
+            _pendingCover = Covers.Import(buffer, file.Name);
+            _pendingPreview = $"data:{MimeFor(file.Name)};base64,{Convert.ToBase64String(buffer.ToArray())}";
+            _coverVersion++;
+        }
+        catch (Exception ex)
+        {
+            _error = $"封面上传失败：{ex.Message}";
+        }
+    }
+
+    private void RemoveCover()
+    {
+        _deleteRequested = true;
+        if (!string.IsNullOrWhiteSpace(_pendingCover))
+        {
+            Covers.Delete(_pendingCover);
+            _pendingCover = "";
+            _pendingPreview = "";
+        }
+        _coverVersion++;
+    }
+
+    private void OnNewPathChanged()
+    {
+        if (string.IsNullOrWhiteSpace(_edit.Title) && !string.IsNullOrWhiteSpace(_newRomPath))
+            _edit.Title = Path.GetFileNameWithoutExtension(_newRomPath.Trim());
+    }
+
+    private async Task SaveAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_edit.Title))
+        {
+            _error = "标题不能为空。";
+            return;
+        }
+
+        if (IsNew)
+        {
+            var full = _newRomPath.Trim();
+            if (full.Length == 0)
+            {
+                _error = "请填写 ROM 路径，或先到「扫描 / 导入」里扫描目录。";
+                return;
+            }
+
+            if (!File.Exists(full))
+            {
+                _error = $"文件不存在：{full}";
+                return;
+            }
+
+            if (!Guard.IsInsideRoots(full))
+            {
+                _error = "ROM 必须位于已登记库目录内，请先在「扫描 / 导入」添加库。";
+                return;
+            }
+
+            _edit.RomPath = Path.GetFullPath(full);
+            _edit.FileSize = new FileInfo(full).Length;
+            if (string.IsNullOrWhiteSpace(_edit.RomHash)) _edit.RomHash = RomHasher.Compute(full);
+            if (string.IsNullOrWhiteSpace(_edit.Platform)) _edit.Platform = ExtensionMap.Detect(full).Platform ?? "未指定";
+        }
+
+        _saving = true;
+        try
+        {
+            _edit.Title = _edit.Title.Trim();
+            _edit.Tags = string.Join(",", _edit.Tags
+                .Split(new[] { ',', '，', ';', '；' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Distinct(StringComparer.OrdinalIgnoreCase));
+
+            var oldCover = _originalCover;
+            _edit.CoverFile = string.IsNullOrWhiteSpace(_pendingCover)
+                ? (_deleteRequested ? "" : _originalCover)
+                : _pendingCover;
+
+            if (IsNew)
+            {
+                Games.Insert(_edit);
+            }
+            else
+            {
+                Games.Update(_edit);
+            }
+
+            Platforms.Ensure(_edit.Platform);
+            AddLookups(LookupRepository.Platform, _edit.Platform);
+            AddLookups(LookupRepository.Genre, _edit.Genre);
+            AddLookups(LookupRepository.Region, _edit.Region);
+            AddLookups(LookupRepository.Language, _edit.Language);
+            AddLookups(LookupRepository.Publisher, _edit.Publisher);
+            AddLookups(LookupRepository.Developer, _edit.Developer);
+            AddLookups(LookupRepository.Tag, _edit.Tags);
+
+            if (!string.IsNullOrWhiteSpace(oldCover) && oldCover != _edit.CoverFile) Covers.Delete(oldCover);
+
+            await OnSaved.InvokeAsync();
+            await OnClose.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = $"保存失败：{ex.Message}";
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private void AddLookups(string kind, string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return;
+        var separators = new[] { ',', '，', ';', '；' };
+        foreach (var value in raw.Split(separators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            Lookups.Add(kind, value);
+    }
+
+    private static string MimeFor(string fileName) => Path.GetExtension(fileName).ToLowerInvariant() switch
+    {
+        ".png" => "image/png",
+        ".webp" => "image/webp",
+        _ => "image/jpeg",
+    };
+
+    private async Task DeleteAsync()
+    {
+        if (IsNew) return;
+        if (!await Confirm("从库中移除这条记录？ROM 文件不会被删除。")) return;
+
+        _saving = true;
+        try
+        {
+            Games.Delete(_edit.Id);
+            Covers.Delete(_edit.CoverFile);
+            await OnSaved.InvokeAsync();
+            await OnClose.InvokeAsync();
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private Task CloseAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(_pendingCover) && _pendingCover != _originalCover)
+            Covers.Delete(_pendingCover);
+        return OnClose.InvokeAsync();
+    }
+
+    private async Task<bool> Confirm(string message)
+    {
+        try
+        {
+            return await JS.InvokeAsync<bool>("micaConfirm", message);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+}

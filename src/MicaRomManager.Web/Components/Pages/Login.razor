@@ -1,0 +1,45 @@
+@page "/login"
+@layout EmptyLayout
+@attribute [AllowAnonymous]
+@using Microsoft.AspNetCore.Antiforgery
+
+<PageTitle>登录 · Mica ROM Manager</PageTitle>
+
+<div class="login-card">
+    <div class="login-brand">MICA ROM MANAGER</div>
+    <p class="muted">请输入访问密码</p>
+
+    @if (Error is not null)
+    {
+        <div class="alert danger">@Error</div>
+    }
+
+    <form method="post" action="/auth/login" class="login-form">
+        <AntiforgeryToken/>
+        <input type="hidden" name="returnUrl" value="@ReturnUrl"/>
+        <label class="field">
+            <span>密码</span>
+            <input type="password" name="password" autocomplete="current-password" autofocus required/>
+        </label>
+        <button type="submit" class="btn primary block">登录</button>
+    </form>
+
+    <p class="muted small login-hint">
+        密码由容器环境变量 <code>MICA_PASSWORD</code> 决定；连续输错会被限流。
+    </p>
+</div>
+
+@code {
+    [SupplyParameterFromQuery(Name = "error")]
+    public string? ErrorCode { get; set; }
+
+    [SupplyParameterFromQuery(Name = "returnUrl")]
+    public string? ReturnUrl { get; set; }
+
+    private string? Error => ErrorCode switch
+    {
+        "1" => "密码不正确。",
+        "expired" => "页面已过期，请重新登录。",
+        _ => null,
+    };
+}

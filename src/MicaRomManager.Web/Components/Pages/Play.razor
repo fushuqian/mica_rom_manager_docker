@@ -1,0 +1,64 @@
+@page "/play/{Id:long}"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inject GameRepository Games
+@inject PlatformRepository Platforms
+
+<PageTitle>试玩 · Mica ROM Manager</PageTitle>
+
+<div class="page">
+    <div class="page-head">
+        <div>
+            <h1>浏览器试玩</h1>
+            <p class="muted">为后续接入 RetroArch / EmulatorJS 预留的播放页。</p>
+        </div>
+        <a class="btn ghost" href="/">返回游戏库</a>
+    </div>
+
+    @if (_game is null)
+    {
+        <div class="alert danger">没有找到这款游戏。</div>
+    }
+    else
+    {
+        <section class="panel">
+            <h2>@_game.Title</h2>
+            <dl class="kv">
+                <dt>平台</dt><dd>@_game.Platform</dd>
+                <dt>文件</dt><dd class="mono">@_game.RomPath</dd>
+                <dt>大小</dt><dd>@_game.FileSizeDisplay</dd>
+            </dl>
+
+            <div class="alert warning">
+                本期尚未内置播放器。规划中的方案是自托管 EmulatorJS（RetroArch 核心的 WASM 构建），
+                由下方的 ROM 流接口向浏览器提供游戏文件；服务端不做模拟，NAS 只负责读文件。
+            </div>
+
+            <div class="button-row">
+                <a class="btn ghost" href="/api/games/@_game.Id/rom">打开 ROM 流（Range）</a>
+                <a class="btn ghost" href="/api/games/@_game.Id/download">下载 ROM</a>
+            </div>
+
+            <p class="muted small">
+                平台核心映射在「设置 → 平台」中维护（play_core 字段），当前为：
+                <code>@(_core ?? "未配置")</code>。
+            </p>
+        </section>
+    }
+</div>
+
+@code {
+    [Parameter] public long Id { get; set; }
+
+    private Game? _game;
+    private string? _core;
+
+    protected override void OnParametersSet()
+    {
+        _game = Games.Get(Id);
+        if (_game is not null)
+        {
+            _core = Platforms.Get(_game.Platform)?.PlayCore;
+        }
+    }
+}

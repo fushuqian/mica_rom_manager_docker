@@ -1,0 +1,26 @@
+@* 通用弹窗容器 *@
+<div class="modal-backdrop" @onclick="CloseAsync">
+    <div class="modal" style="width:@(Width)" @onclick:stopPropagation="true">
+        <div class="modal-head">
+            <h3>@Title</h3>
+            <button type="button" class="icon-btn" @onclick="CloseAsync" title="关闭">✕</button>
+        </div>
+        <div class="modal-body">
+            @ChildContent
+        </div>
+        @if (Footer is not null)
+        {
+            <div class="modal-foot">@Footer</div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public string Title { get; set; } = "";
+    [Parameter] public string Width { get; set; } = "760px";
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public RenderFragment? Footer { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private Task CloseAsync() => OnClose.InvokeAsync();
+}

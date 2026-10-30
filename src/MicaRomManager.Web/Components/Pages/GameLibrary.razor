@@ -1,0 +1,737 @@
+@page "/"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inject GameRepository Games
+@inject PlatformRepository Platforms
+@inject LookupRepository Lookups
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+@implements IDisposable
+
+<PageTitle>游戏库 · Mica ROM Manager</PageTitle>
+
+<div class="library-layout">
+    <aside class="sidebar">
+        <div class="sidebar-title">平台</div>
+        <button type="button" class="sidebar-item @(string.IsNullOrEmpty(_platform) ? "active" : "")"
+                @onclick="ClearPlatformAsync">
+            <span>全部游戏</span><span class="count">@_result.Total</span>
+        </button>
+        @foreach (var platform in _platforms)
+        {
+            <button type="button"
+                    class="sidebar-item @(string.Equals(_platform, platform.Name, StringComparison.OrdinalIgnoreCase) ? "active" : "")"
+                    @onclick="() => SelectPlatformAsync(platform.Name)">
+                <span>@platform.Name</span><span class="count">@platform.GameCount</span>
+            </button>
+        }
+        @if (_platforms.Count == 0)
+        {
+            <p class="muted small sidebar-hint">还没有平台数据，先在「扫描 / 导入」里添加库并扫描。</p>
+        }
+    </aside>
+
+    <section class="library-main">
+        <div class="library-head">
+            <div>
+                <h1>游戏库</h1>
+                <div class="muted small">
+                    共 @_result.Total 款
+                    @if (_selected.Count > 0)
+                    {
+                        <span> · 已选 @_selected.Count 款</span>
+                    }
+                </div>
+            </div>
+            <div class="head-actions">
+                <a class="btn ghost" href="/scrape">AI 刮削</a>
+                <button type="button" class="btn ghost" @onclick="OpenNewAsync">新建</button>
+                <button type="button" class="btn ghost" @onclick="RefreshAsync" disabled="@_loading">刷新</button>
+                <a class="btn primary" href="/import">扫描 / 导入</a>
+            </div>
+        </div>
+
+        <div class="filterbar">
+            <input class="search" type="search" placeholder="输入游戏名进行搜索" @bind="_q" @bind:event="oninput"
+                   @onkeydown="OnSearchKeyDown"/>
+            <select value="@_platform" @onchange="OnPlatformFilterChanged">
+                <option value="">全部平台</option>
+                @foreach (var platform in _platforms)
+                {
+                    <option value="@platform.Name">@platform.Name</option>
+                }
+            </select>
+            <select value="@_status" @onchange="OnStatusFilterChanged">
+                <option value="">全部状态</option>
+                @foreach (var status in GameStatus.All)
+                {
+                    <option value="@status">@status</option>
+                }
+            </select>
+            <select value="@_region" @onchange="OnRegionFilterChanged">
+                <option value="">全部区域</option>
+                @foreach (var value in _regions) { <option value="@value">@value</option> }
+            </select>
+            <select value="@_language" @onchange="OnLanguageFilterChanged">
+                <option value="">全部语言</option>
+                @foreach (var value in _languages) { <option value="@value">@value</option> }
+            </select>
+            <select value="@_genre" @onchange="OnGenreFilterChanged">
+                <option value="">全部类型</option>
+                @foreach (var value in _genres) { <option value="@value">@value</option> }
+            </select>
+            <select value="@_tag" @onchange="OnTagFilterChanged">
+                <option value="">全部标签</option>
+                @foreach (var value in _tags) { <option value="@value">@value</option> }
+            </select>
+            <label class="check inline"><input type="checkbox" checked="@_favoritesOnly" @onchange="OnFavoritesChanged"/> 收藏</label>
+            <label class="check inline"><input type="checkbox" checked="@_missingOnly" @onchange="OnMissingChanged"/> 文件缺失</label>
+            <button type="button" class="btn ghost small" @onclick="ResetFiltersAsync">清除筛选</button>
+        </div>
+
+        <div class="toolbar-row">
+            <button type="button" class="btn ghost small" @onclick="ToggleSelectAll">全选本页</button>
+            <button type="button" class="btn ghost small" @onclick="ClearSelection" disabled="@(_selected.Count == 0)">取消选择</button>
+            <button type="button" class="btn ghost small" disabled="@(_selected.Count == 0)" @onclick="OpenBatchAsync">批量编辑</button>
+            <button type="button" class="btn ghost small danger-text" disabled="@(_selected.Count == 0)" @onclick="DeleteSelectedAsync">从库中移除</button>
+            <button type="button" class="btn ghost small" disabled="@(_selected.Count == 0)" @onclick="OpenOrganizeAsync">整理文件名</button>
+            <button type="button" class="btn ghost small" @onclick="ExportAsync">导出 CSV</button>
+            <div class="toolbar-spacer"></div>
+            <span class="muted small">@_summary</span>
+        </div>
+
+        <div class="table-wrap">
+            <table class="grid">
+                <thead>
+                    <tr>
+                        <th style="width:34px"></th>
+                        <th style="width:44px"></th>
+                        <th style="width:110px" class="sortable" @onclick='() => SortByAsync("platform")'>平台 @SortMark("platform")</th>
+                        <th class="sortable" @onclick='() => SortByAsync("title")'>标题 @SortMark("title")</th>
+                        <th style="width:104px">评分</th>
+                        <th style="width:76px">区域</th>
+                        <th style="width:92px">语言</th>
+                        <th style="width:100px">特注</th>
+                        <th style="width:92px">类型</th>
+                        <th style="width:66px" class="sortable" @onclick='() => SortByAsync("releaseyear")'>年份 @SortMark("releaseyear")</th>
+                        <th style="width:58px">光碟</th>
+                        <th style="width:58px">格式</th>
+                        <th style="width:82px">状态</th>
+                        <th style="width:54px" class="sortable" @onclick='() => SortByAsync("playseconds")'>次数 @SortMark("playseconds")</th>
+                        <th style="width:66px">时长</th>
+                        <th style="width:118px" class="sortable" @onclick='() => SortByAsync("lastplayed")'>最近游玩 @SortMark("lastplayed")</th>
+                        <th style="width:80px" class="sortable" @onclick='() => SortByAsync("filesize")'>大小 @SortMark("filesize")</th>
+                        <th style="width:130px">标签</th>
+                        <th style="width:96px"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (_loading && _result.Items.Count == 0)
+                    {
+                        <tr><td colspan="19" class="grid-empty">正在加载…</td></tr>
+                    }
+                    @foreach (var game in _result.Items)
+                    {
+                        <tr class="@(game.Missing ? "missing" : "") @(_selected.Contains(game.Id) ? "selected" : "")"
+                            @ondblclick="() => OpenEditAsync(game)"
+                            @oncontextmenu="e => OpenMenu(e, game)" @oncontextmenu:preventDefault>
+                            <td @onclick:stopPropagation="true">
+                                <input type="checkbox" checked="@_selected.Contains(game.Id)"
+                                       @onchange="e => ToggleSelect(game.Id, e)"/>
+                            </td>
+                            <td>
+                                @if (!string.IsNullOrWhiteSpace(game.CoverFile))
+                                {
+                                    <img class="thumb" src="/api/games/@game.Id/cover" loading="lazy" alt=""/>
+                                }
+                                else
+                                {
+                                    <div class="thumb placeholder"></div>
+                                }
+                            </td>
+                            <td class="ellipsis" @onclick:stopPropagation="true" @ondblclick:stopPropagation="true">
+                                <select class="cell-select" value="@game.Platform" @onchange='e => SetFieldAsync(game, "platform", e)'>
+                                    @if (!_platforms.Any(p => p.Name == game.Platform))
+                                    {
+                                        <option value="@game.Platform">@game.Platform</option>
+                                    }
+                                    @foreach (var platform in _platforms)
+                                    {
+                                        <option value="@platform.Name">@platform.Name</option>
+                                    }
+                                </select>
+                            </td>
+                            <td class="title-cell ellipsis" title="@game.Title">@game.Title</td>
+                            <td @onclick:stopPropagation="true" @ondblclick:stopPropagation="true">
+                                <span class="stars">
+                                    @for (var star = 1; star <= 5; star++)
+                                    {
+                                        var value = star;
+                                        <span class="star" @onclick="() => RateAsync(game, value)">@(game.Rating >= star ? "★" : "☆")</span>
+                                    }
+                                </span>
+                            </td>
+                            <td class="ellipsis" @onclick:stopPropagation="true" @ondblclick:stopPropagation="true">
+                                <select class="cell-select" value="@game.Region" @onchange='e => SetFieldAsync(game, "region", e)'>
+                                    <option value="">—</option>
+                                    @foreach (var value in _regions) { <option value="@value">@value</option> }
+                                </select>
+                            </td>
+                            <td class="ellipsis" @onclick:stopPropagation="true" @ondblclick:stopPropagation="true">
+                                <select class="cell-select" value="@game.Language" @onchange='e => SetFieldAsync(game, "language", e)'>
+                                    <option value="">—</option>
+                                    @foreach (var value in _languages) { <option value="@value">@value</option> }
+                                </select>
+                            </td>
+                            <td class="ellipsis">@game.SpecialNote</td>
+                            <td class="ellipsis">@game.Genre</td>
+                            <td>@game.ReleaseYear</td>
+                            <td>@game.DiscCountText</td>
+                            <td>@game.Format</td>
+                            <td @onclick:stopPropagation="true" @ondblclick:stopPropagation="true">
+                                <select class="cell-select" value="@game.Status" @onchange='e => SetFieldAsync(game, "status", e)'>
+                                    @foreach (var status in GameStatus.All) { <option value="@status">@status</option> }
+                                </select>
+                            </td>
+                            <td>@game.PlayCount</td>
+                            <td>@game.PlaySecondsDisplay</td>
+                            <td>@game.LastPlayedDisplay</td>
+                            <td>@game.FileSizeDisplay</td>
+                            <td class="ellipsis" title="@game.Tags">@game.Tags</td>
+                            <td class="row-actions" @onclick:stopPropagation="true" @ondblclick:stopPropagation="true">
+                                <button type="button" class="icon-btn" title="编辑" @onclick="() => OpenEditAsync(game)">✎</button>
+                                <button type="button" class="icon-btn" title="收藏"
+                                        @onclick="() => ToggleFavoriteAsync(game)">@(game.Favorite ? "★" : "☆")</button>
+                                <button type="button" class="icon-btn" title="更多"
+                                        @onclick="e => OpenMenu(e, game)">⋯</button>
+                            </td>
+                        </tr>
+                    }
+                    @if (!_loading && _result.Items.Count == 0)
+                    {
+                        <tr>
+                            <td colspan="19" class="grid-empty">
+                                @(string.IsNullOrWhiteSpace(_q) && !HasFilters
+                                    ? "游戏库还是空的，先去「扫描 / 导入」添加一个库目录。"
+                                    : "没有符合条件的游戏，试试清除筛选。")
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="pager">
+            <select value="@_pageSize" @onchange="OnPageSizeChanged">
+                <option value="50">每页 50</option>
+                <option value="100">每页 100</option>
+                <option value="200">每页 200</option>
+            </select>
+            <button type="button" class="btn ghost small" disabled="@(_page <= 1)" @onclick="() => GoPageAsync(1)">首页</button>
+            <button type="button" class="btn ghost small" disabled="@(_page <= 1)" @onclick="() => GoPageAsync(_page - 1)">上一页</button>
+            <span class="muted">第 @_page / @Math.Max(1, TotalPages) 页</span>
+            <button type="button" class="btn ghost small" disabled="@(_page >= TotalPages)" @onclick="() => GoPageAsync(_page + 1)">下一页</button>
+            <button type="button" class="btn ghost small" disabled="@(_page >= TotalPages)" @onclick="() => GoPageAsync(TotalPages)">末页</button>
+        </div>
+    </section>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(_toast))
+{
+    <div class="toast">@_toast</div>
+}
+@if (!string.IsNullOrWhiteSpace(_error))
+{
+    <div class="toast danger" @onclick="() => _error = null">@_error</div>
+}
+
+@if (_menuGame is { } menuGame)
+{
+    <div class="menu-backdrop" @onclick="CloseMenu"></div>
+    <div class="context-menu" style="left:@(_menuX)px; top:@(_menuY)px">
+        <button type="button" @onclick="() => OpenEditAsync(menuGame)">编辑</button>
+        <button type="button" @onclick="() => ToggleFavoriteAsync(menuGame)">@(menuGame.Favorite ? "取消收藏" : "收藏")</button>
+        <button type="button" @onclick="() => OpenScrapeAsync(menuGame)">AI 刮削</button>
+        <button type="button" class="danger-text" @onclick="() => RemoveAsync(menuGame)">从库中移除</button>
+    </div>
+}
+
+@if (_editing is not null || _isNew)
+{
+    <GameEditDialog Game="_editing" IsNew="_isNew" OnClose="CloseEditorAsync" OnSaved="OnSavedAsync"/>
+}
+
+@if (_batchOpen)
+{
+    <BatchEditDialog Ids="_selected.ToList()" OnClose="CloseBatchAsync" OnApplied="OnBatchAppliedAsync"/>
+}
+
+@if (_organizeOpen)
+{
+    <OrganizeDialog Ids="_selected.ToList()" OnClose="CloseOrganizeAsync" OnApplied="OnOrganizeAppliedAsync"/>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "q")] public string? QueryParam { get; set; }
+    [SupplyParameterFromQuery(Name = "platform")] public string? PlatformParam { get; set; }
+    [SupplyParameterFromQuery(Name = "status")] public string? StatusParam { get; set; }
+    [SupplyParameterFromQuery(Name = "region")] public string? RegionParam { get; set; }
+    [SupplyParameterFromQuery(Name = "language")] public string? LanguageParam { get; set; }
+    [SupplyParameterFromQuery(Name = "genre")] public string? GenreParam { get; set; }
+    [SupplyParameterFromQuery(Name = "tag")] public string? TagParam { get; set; }
+    [SupplyParameterFromQuery(Name = "fav")] public string? FavoriteParam { get; set; }
+    [SupplyParameterFromQuery(Name = "missing")] public string? MissingParam { get; set; }
+    [SupplyParameterFromQuery(Name = "page")] public int? PageParam { get; set; }
+    [SupplyParameterFromQuery(Name = "sort")] public string? SortParam { get; set; }
+    [SupplyParameterFromQuery(Name = "desc")] public string? DescParam { get; set; }
+
+    private PagedResult<Game> _result = new(Array.Empty<Game>(), 0);
+    private List<Platform> _platforms = new();
+    private IReadOnlyList<string> _regions = Array.Empty<string>();
+    private IReadOnlyList<string> _languages = Array.Empty<string>();
+    private IReadOnlyList<string> _genres = Array.Empty<string>();
+    private IReadOnlyList<string> _tags = Array.Empty<string>();
+
+    private readonly HashSet<long> _selected = new();
+    private string _q = "";
+    private string _platform = "";
+    private string _status = "";
+    private string _region = "";
+    private string _language = "";
+    private string _genre = "";
+    private string _tag = "";
+    private bool _favoritesOnly;
+    private bool _missingOnly;
+    private int _page = 1;
+    private int _pageSize = 50;
+    private string _sort = "title";
+    private bool _desc;
+    private bool _loading;
+
+    private Game? _editing;
+    private bool _isNew;
+    private bool _batchOpen;
+    private bool _organizeOpen;
+    private Game? _menuGame;
+    private double _menuX;
+    private double _menuY;
+    private string _toast = "";
+    private string? _error;
+    private string _summary = "";
+    private System.Threading.Timer? _toastTimer;
+
+    private int TotalPages => Math.Max(1, (_result.Total + _pageSize - 1) / _pageSize);
+    private bool HasFilters =>
+        !string.IsNullOrWhiteSpace(_q) || !string.IsNullOrWhiteSpace(_platform) ||
+        !string.IsNullOrWhiteSpace(_status) || !string.IsNullOrWhiteSpace(_region) ||
+        !string.IsNullOrWhiteSpace(_language) || !string.IsNullOrWhiteSpace(_genre) ||
+        !string.IsNullOrWhiteSpace(_tag) || _favoritesOnly || _missingOnly;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _q = QueryParam ?? "";
+        _platform = PlatformParam ?? "";
+        _status = StatusParam ?? "";
+        _region = RegionParam ?? "";
+        _language = LanguageParam ?? "";
+        _genre = GenreParam ?? "";
+        _tag = TagParam ?? "";
+        _favoritesOnly = FavoriteParam == "1";
+        _missingOnly = MissingParam == "1";
+        _page = PageParam is > 0 ? PageParam.Value : 1;
+        _sort = SortParam ?? "title";
+        _desc = DescParam == "1";
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            var filter = BuildFilter();
+            _result = Games.Query(filter, new GameSort(_sort, _desc), _page, _pageSize);
+            _platforms = Platforms.ListAll().ToList();
+            _regions = Games.Distinct("region");
+            _languages = Games.Distinct("language");
+            _genres = Games.Distinct("genre");
+            _tags = Games.DistinctTags();
+            _summary = $"上次刷新：{DateTime.Now:HH:mm:ss}";
+        }
+        catch (Exception ex)
+        {
+            _error = $"加载失败：{ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private GameFilter BuildFilter() => new()
+    {
+        Keyword = string.IsNullOrWhiteSpace(_q) ? null : _q.Trim(),
+        Platform = string.IsNullOrWhiteSpace(_platform) ? null : _platform,
+        Status = string.IsNullOrWhiteSpace(_status) ? null : _status,
+        Region = string.IsNullOrWhiteSpace(_region) ? null : _region,
+        Language = string.IsNullOrWhiteSpace(_language) ? null : _language,
+        Genre = string.IsNullOrWhiteSpace(_genre) ? null : _genre,
+        Tag = string.IsNullOrWhiteSpace(_tag) ? null : _tag,
+        OnlyFavorites = _favoritesOnly,
+        OnlyMissing = _missingOnly,
+    };
+
+    private async Task NavigateAsync(int? page = null)
+    {
+        _page = page ?? 1;
+        var parts = new List<string>();
+        void Add(string key, string? value)
+        {
+            if (!string.IsNullOrWhiteSpace(value)) parts.Add($"{key}={Uri.EscapeDataString(value)}");
+        }
+
+        Add("q", _q.Trim());
+        Add("platform", _platform);
+        Add("status", _status);
+        Add("region", _region);
+        Add("language", _language);
+        Add("genre", _genre);
+        Add("tag", _tag);
+        if (_favoritesOnly) parts.Add("fav=1");
+        if (_missingOnly) parts.Add("missing=1");
+        if (_page > 1) parts.Add($"page={_page}");
+        if (_sort != "title") Add("sort", _sort);
+        if (_desc) parts.Add("desc=1");
+
+        var url = parts.Count == 0 ? "/" : "/?" + string.Join("&", parts);
+        Nav.NavigateTo(url, replace: true);
+        await Task.CompletedTask;
+    }
+
+    private async Task RefreshAsync() => await LoadAsync();
+
+    private async Task OnSearchKeyDown(KeyboardEventArgs args)
+    {
+        if (args.Key == "Enter") await NavigateAsync();
+    }
+
+    private async Task OnPlatformFilterChanged(ChangeEventArgs args)
+    {
+        _platform = args.Value?.ToString() ?? "";
+        await NavigateAsync();
+    }
+
+    private async Task OnStatusFilterChanged(ChangeEventArgs args)
+    {
+        _status = args.Value?.ToString() ?? "";
+        await NavigateAsync();
+    }
+
+    private async Task OnRegionFilterChanged(ChangeEventArgs args)
+    {
+        _region = args.Value?.ToString() ?? "";
+        await NavigateAsync();
+    }
+
+    private async Task OnLanguageFilterChanged(ChangeEventArgs args)
+    {
+        _language = args.Value?.ToString() ?? "";
+        await NavigateAsync();
+    }
+
+    private async Task OnGenreFilterChanged(ChangeEventArgs args)
+    {
+        _genre = args.Value?.ToString() ?? "";
+        await NavigateAsync();
+    }
+
+    private async Task OnTagFilterChanged(ChangeEventArgs args)
+    {
+        _tag = args.Value?.ToString() ?? "";
+        await NavigateAsync();
+    }
+
+    private async Task OnFavoritesChanged(ChangeEventArgs args)
+    {
+        _favoritesOnly = args.Value is true;
+        await NavigateAsync();
+    }
+
+    private async Task OnMissingChanged(ChangeEventArgs args)
+    {
+        _missingOnly = args.Value is true;
+        await NavigateAsync();
+    }
+
+    private async Task OnPageSizeChanged(ChangeEventArgs args)
+    {
+        if (int.TryParse(args.Value?.ToString(), out var size) && size > 0)
+        {
+            _pageSize = size;
+            await LoadAsync();
+        }
+    }
+
+    private async Task SelectPlatformAsync(string platform)
+    {
+        _platform = platform;
+        await NavigateAsync();
+    }
+
+    private async Task ClearPlatformAsync()
+    {
+        _platform = "";
+        await NavigateAsync();
+    }
+
+    private async Task ResetFiltersAsync()
+    {
+        _q = "";
+        _platform = "";
+        _status = "";
+        _region = "";
+        _language = "";
+        _genre = "";
+        _tag = "";
+        _favoritesOnly = false;
+        _missingOnly = false;
+        await NavigateAsync();
+    }
+
+    private async Task SortByAsync(string column)
+    {
+        if (string.Equals(_sort, column, StringComparison.OrdinalIgnoreCase))
+        {
+            _desc = !_desc;
+        }
+        else
+        {
+            _sort = column;
+            _desc = false;
+        }
+
+        await NavigateAsync();
+    }
+
+    private string SortMark(string column) =>
+        string.Equals(_sort, column, StringComparison.OrdinalIgnoreCase) ? (_desc ? "▼" : "▲") : "";
+
+    private async Task GoPageAsync(int page)
+    {
+        _page = Math.Clamp(page, 1, TotalPages);
+        await NavigateAsync(_page);
+    }
+
+    private void ToggleSelect(long id, ChangeEventArgs args)
+    {
+        if (args.Value is true) _selected.Add(id);
+        else _selected.Remove(id);
+    }
+
+    private void ToggleSelectAll()
+    {
+        var allSelected = _result.Items.All(game => _selected.Contains(game.Id));
+        foreach (var game in _result.Items)
+        {
+            if (allSelected) _selected.Remove(game.Id);
+            else _selected.Add(game.Id);
+        }
+    }
+
+    private void ClearSelection() => _selected.Clear();
+
+    private async Task SetFieldAsync(Game game, string field, ChangeEventArgs args)
+    {
+        var value = args.Value?.ToString() ?? "";
+        switch (field)
+        {
+            case "platform":
+                game.Platform = value;
+                Platforms.Ensure(value);
+                break;
+            case "region":
+                game.Region = value;
+                Lookups.Add(LookupRepository.Region, value);
+                break;
+            case "language":
+                game.Language = value;
+                Lookups.Add(LookupRepository.Language, value);
+                break;
+            case "status":
+                game.Status = value;
+                break;
+            default:
+                return;
+        }
+
+        Games.Update(game);
+        await LoadAsync();
+        ShowToast("已保存");
+    }
+
+    private async Task RateAsync(Game game, int rating)
+    {
+        game.Rating = game.Rating == rating ? 0 : rating;
+        Games.Update(game);
+        await LoadAsync();
+    }
+
+    private async Task ToggleFavoriteAsync(Game? game)
+    {
+        if (game is null) return;
+        game.Favorite = !game.Favorite;
+        Games.Update(game);
+        CloseMenu();
+        await LoadAsync();
+    }
+
+    private async Task OpenEditAsync(Game? game)
+    {
+        CloseMenu();
+        _editing = game;
+        _isNew = false;
+        await Task.CompletedTask;
+    }
+
+    private Task OpenNewAsync()
+    {
+        CloseMenu();
+        _editing = null;
+        _isNew = true;
+        return Task.CompletedTask;
+    }
+
+    private Task CloseEditorAsync()
+    {
+        _editing = null;
+        _isNew = false;
+        return Task.CompletedTask;
+    }
+
+    private async Task OnSavedAsync()
+    {
+        _editing = null;
+        _isNew = false;
+        await LoadAsync();
+        ShowToast("已保存");
+    }
+
+    private async Task OpenBatchAsync()
+    {
+        _batchOpen = true;
+        await Task.CompletedTask;
+    }
+
+    private Task CloseBatchAsync()
+    {
+        _batchOpen = false;
+        return Task.CompletedTask;
+    }
+
+    private async Task OnBatchAppliedAsync()
+    {
+        _batchOpen = false;
+        await LoadAsync();
+        ShowToast("批量修改已应用");
+    }
+
+    private Task OpenOrganizeAsync()
+    {
+        _organizeOpen = true;
+        return Task.CompletedTask;
+    }
+
+    private Task CloseOrganizeAsync()
+    {
+        _organizeOpen = false;
+        return Task.CompletedTask;
+    }
+
+    private async Task OnOrganizeAppliedAsync()
+    {
+        _organizeOpen = false;
+        await LoadAsync();
+        ShowToast("文件名整理完成");
+    }
+
+    private async Task DeleteSelectedAsync()
+    {
+        if (_selected.Count == 0) return;
+        if (!await Confirm($"从库中移除选中的 {_selected.Count} 条记录？ROM 文件不会被删除。")) return;
+
+        Games.DeleteMany(_selected.ToList());
+        _selected.Clear();
+        await LoadAsync();
+        ShowToast("已从库中移除");
+    }
+
+    private async Task RemoveAsync(Game? game)
+    {
+        if (game is null) return;
+        CloseMenu();
+        if (!await Confirm($"从库中移除「{game.Title}」？ROM 文件不会被删除。")) return;
+
+        Games.Delete(game.Id);
+        _selected.Remove(game.Id);
+        await LoadAsync();
+        ShowToast("已从库中移除");
+    }
+
+    private void OpenMenu(MouseEventArgs args, Game game)
+    {
+        _menuGame = game;
+        _menuX = args.ClientX;
+        _menuY = args.ClientY;
+    }
+
+    private void CloseMenu() => _menuGame = null;
+
+    private void OpenScrapeAsync(Game game)
+    {
+        CloseMenu();
+        Nav.NavigateTo($"/scrape?ids={game.Id}");
+    }
+
+    private async Task ExportAsync()
+    {
+        var url = _selected.Count > 0
+            ? $"/api/export/csv?ids={string.Join(",", _selected)}"
+            : "/api/export/csv";
+        await JS.InvokeVoidAsync("micaDownload", url);
+    }
+
+    private async Task<bool> Confirm(string message)
+    {
+        try
+        {
+            return await JS.InvokeAsync<bool>("micaConfirm", message);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void ShowToast(string message)
+    {
+        _toast = message;
+        _toastTimer?.Dispose();
+        _toastTimer = new System.Threading.Timer(async _ =>
+        {
+            try
+            {
+                await InvokeAsync(() =>
+                {
+                    _toast = "";
+                    StateHasChanged();
+                });
+            }
+            catch
+            {
+                // 页面已释放
+            }
+        }, null, 2500, Timeout.Infinite);
+    }
+
+    public void Dispose() => _toastTimer?.Dispose();
+}

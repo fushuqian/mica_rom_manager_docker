@@ -1,0 +1,22 @@
+bin/
+[Tt]est[Rr]esults/
+obj/
+data/
+.docker/
+.dotnet/
+*.user
+*.suo
+*.log
+TestResults/
+.vs/
+.vscode/
+.idea/
+mica_rom_manager/
+docs/*.local.md
+.env
+deploy/.env
+roms/
+
+# 本地参考资料（不属于本项目）
+MicaRomManager-代码分析报告.md
+.git-token

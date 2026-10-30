@@ -1,0 +1,108 @@
+@* 整理文件名：先预览旧名 → 新名，确认后再移动文件 *@
+@inject GameRepository Games
+@inject OrganizerService Organizer
+
+<Modal Title="整理文件名" Width="880px" OnClose="CloseAsync">
+    <ChildContent>
+        @if (_message is not null)
+        {
+            <div class="alert @(_ok ? "" : "danger")">@_message</div>
+        }
+
+        @if (_plan is null)
+        {
+            <p class="muted">正在生成计划…</p>
+        }
+        else if (_plan.Items.Count == 0 && _message is null)
+        {
+            <p class="muted">没有需要重命名的文件（名称已符合规则，或文件不在库目录内）。</p>
+            @foreach (var warning in _plan.Warnings.Take(10))
+            {
+                <p class="muted small">@warning</p>
+            }
+        }
+        else if (_plan.Items.Count > 0)
+        {
+            <p class="muted small">
+                将重命名 <b>@_plan.Items.Count</b> 个文件；顺序为「标题 [Disc-n] (区域)(语言)(特注)」。
+                只处理库目录内、可写的文件，目标重名会自动加序号。
+            </p>
+
+            <table class="grid compact">
+                <thead><tr><th>原文件名</th><th>新文件名</th></tr></thead>
+                <tbody>
+                    @foreach (var item in _plan.Items)
+                    {
+                        <tr>
+                            <td class="mono small ellipsis" title="@item.OldPath">@System.IO.Path.GetFileName(item.OldPath)</td>
+                            <td class="mono small ellipsis" title="@item.NewPath">@System.IO.Path.GetFileName(item.NewPath)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+
+            @if (_plan.Warnings.Count > 0)
+            {
+                <h4>跳过 / 警告</h4>
+                @foreach (var warning in _plan.Warnings.Take(15))
+                {
+                    <p class="muted small">@warning</p>
+                }
+            }
+        }
+    </ChildContent>
+
+    <Footer>
+        <div class="modal-actions">
+            <button type="button" class="btn ghost" @onclick="CloseAsync">取消</button>
+            <button type="button" class="btn primary" @onclick="ApplyAsync"
+                    disabled="@(_plan is null || _plan.Items.Count == 0 || _busy)">执行重命名</button>
+        </div>
+    </Footer>
+</Modal>
+
+@code {
+    [Parameter] public IReadOnlyCollection<long> Ids { get; set; } = Array.Empty<long>();
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback OnApplied { get; set; }
+
+    private RenamePlan? _plan;
+    private string? _message;
+    private bool _ok;
+    private bool _busy;
+
+    protected override void OnInitialized()
+    {
+        var games = Games.GetMany(Ids.ToList());
+        _plan = Organizer.Plan(games);
+        if (_plan.Items.Count == 0 && _plan.Warnings.Count > 0)
+            _message = string.Join("；", _plan.Warnings.Take(3));
+    }
+
+    private async Task ApplyAsync()
+    {
+        if (_plan is null || _plan.Items.Count == 0) return;
+
+        _busy = true;
+        try
+        {
+            var result = Organizer.Apply(_plan);
+            _ok = result.Failed == 0;
+            _message = $"已重命名 {result.Renamed} 个，失败 {result.Failed} 个。" +
+                       (result.Messages.Count > 0 ? " " + string.Join("；", result.Messages.Take(3)) : "");
+            _plan = null;
+            await OnApplied.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            _message = $"整理失败：{ex.Message}";
+            _ok = false;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private Task CloseAsync() => OnClose.InvokeAsync();
+}

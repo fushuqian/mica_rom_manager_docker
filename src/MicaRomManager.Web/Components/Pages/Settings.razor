@@ -1,0 +1,653 @@
+@page "/settings"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inject SettingsRepository SettingsRepo
+@inject LibraryRepository Libraries
+@inject LookupRepository Lookups
+@inject PlatformRepository Platforms
+@inject GameRepository Games
+@inject AiPromptCatalog Prompts
+@inject IAiChatClient Ai
+@inject AiSearchService Search
+@inject BackupService Backups
+@inject CoverStore Covers
+@inject ISecretProtector Protector
+@inject Db Database
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+<PageTitle>设置 · Mica ROM Manager</PageTitle>
+
+<div class="page">
+    <div class="page-head">
+        <div>
+            <h1>设置</h1>
+            <p class="muted">库目录、词典、AI 与数据维护。</p>
+        </div>
+        <a class="btn ghost" href="/">返回游戏库</a>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_message))
+    {
+        <div class="alert @(_messageKind)">@_message</div>
+    }
+
+    <div class="tabs">
+        @foreach (var tab in Tabs)
+        {
+            <button type="button" class="tab @(_tab == tab.Key ? "active" : "")" @onclick="() => SwitchTab(tab.Key)">@tab.Value</button>
+        }
+    </div>
+
+    @if (_tab == "general")
+    {
+        <section class="panel">
+            <h2>常规</h2>
+            <dl class="kv">
+                <dt>数据目录</dt><dd class="mono">@Database.DataDir</dd>
+                <dt>数据库文件</dt><dd class="mono">@Database.DbPath</dd>
+                <dt>游戏总数</dt><dd>@Games.CountAll() 款</dd>
+                <dt>库目录</dt><dd>@Libraries.ListAll().Count 个</dd>
+                <dt>版本</dt><dd>@AppInfo.Version</dd>
+            </dl>
+            <h3>访问密码</h3>
+            <p class="muted">
+                密码由容器环境变量 <code>MICA_PASSWORD</code> 控制（至少 8 位）。修改后需要重启容器，网页不提供改密入口。
+            </p>
+            <h3>时区</h3>
+            <p class="muted">容器通过 <code>TZ</code> 环境变量设置时区，默认 <code>Asia/Shanghai</code>。</p>
+        </section>
+    }
+
+    @if (_tab == "libraries")
+    {
+        <section class="panel">
+            <h2>库目录</h2>
+            <table class="grid compact">
+                <thead><tr><th>名称</th><th>容器内路径</th><th style="width:70px">游戏</th><th style="width:70px">可写</th><th style="width:120px"></th></tr></thead>
+                <tbody>
+                    @foreach (var library in _libraries)
+                    {
+                        <tr>
+                            <td>@library.Name</td>
+                            <td class="mono ellipsis" title="@library.RootPath">@library.RootPath</td>
+                            <td>@library.GameCount</td>
+                            <td>@(library.Writable ? "是" : "只读")</td>
+                            <td>
+                                <button type="button" class="btn ghost small danger-text" @onclick="() => DeleteLibraryAsync(library)">删除</button>
+                            </td>
+                        </tr>
+                    }
+                    @if (_libraries.Count == 0)
+                    {
+                        <tr><td colspan="5" class="grid-empty">还没有库目录。</td></tr>
+                    }
+                </tbody>
+            </table>
+
+            <h3>添加库目录</h3>
+            <div class="form-inline">
+                <label class="field"><span>名称</span><input type="text" @bind="_newLibraryName"/></label>
+                <label class="field grow"><span>容器内绝对路径</span><input type="text" @bind="_newLibraryRoot" placeholder="/roms/nes"/></label>
+                <button type="button" class="btn primary" @onclick="AddLibraryAsync">添加</button>
+            </div>
+            <label class="check inline"><input type="checkbox" @bind="_deleteLibraryGames"/> 删除库时同时删除游戏记录</label>
+            <p class="muted small">扫描入口在 <a href="/import">扫描 / 导入</a>。</p>
+        </section>
+    }
+
+    @if (_tab == "lookup")
+    {
+        <section class="panel">
+            <h2>词典库</h2>
+            <div class="form-inline">
+                <label class="field">
+                    <span>类型</span>
+                    <select value="@_lookupKind" @onchange="OnLookupKindChanged">
+                        @foreach (var kind in LookupRepository.Kinds)
+                        {
+                            <option value="@kind">@KindName(kind)</option>
+                        }
+                    </select>
+                </label>
+                <label class="field grow"><span>新增词条</span><input type="text" @bind="_newLookup"/></label>
+                <button type="button" class="btn primary" @onclick="AddLookupAsync">添加</button>
+            </div>
+
+            <table class="grid compact">
+                <thead><tr><th>词条</th><th style="width:80px">使用数</th><th style="width:320px">操作</th></tr></thead>
+                <tbody>
+                    @foreach (var item in _lookupValues)
+                    {
+                        <tr>
+                            <td>@item.Value</td>
+                            <td>@item.Usage</td>
+                            <td>
+                                <input type="text" class="inline-input" value="@GetRenameValue(item.Value)"
+                                       @oninput="e => SetRenameValue(item.Value, e)"/>
+                                <button type="button" class="btn ghost small" @onclick="() => RenameLookupAsync(item)">改名</button>
+                                <button type="button" class="btn ghost small danger-text" @onclick="() => DeleteLookupAsync(item)">删除</button>
+                            </td>
+                        </tr>
+                    }
+                    @if (_lookupValues.Count == 0)
+                    {
+                        <tr><td colspan="3" class="grid-empty">暂无词条。</td></tr>
+                    }
+                </tbody>
+            </table>
+        </section>
+    }
+
+    @if (_tab == "ai")
+    {
+        <section class="panel">
+            <h2>AI（OpenAI 兼容接口）</h2>
+            <div class="form-grid">
+                <label class="field span2">
+                    <span>BaseUrl</span>
+                    <input type="text" @bind="_aiBaseUrl" placeholder="https://api.deepseek.com/v1"/>
+                </label>
+                <label class="field">
+                    <span>模型</span>
+                    <input type="text" @bind="_aiModel" placeholder="deepseek-chat"/>
+                </label>
+                <label class="field">
+                    <span>API Key @(string.IsNullOrWhiteSpace(_maskedKey) ? "" : $"（当前 {_maskedKey}）")</span>
+                    <input type="password" @bind="_aiKey" placeholder="留空表示不修改"/>
+                </label>
+                <label class="field">
+                    <span>超时（秒）</span>
+                    <input type="number" min="10" max="600" @bind="_aiTimeout"/>
+                </label>
+                <label class="field">
+                    <span>单次批量上限</span>
+                    <input type="number" min="1" max="200" @bind="_aiBatch"/>
+                </label>
+                <label class="field checkbox-field"><input type="checkbox" @bind="_searchEnabled"/> <span>允许联网搜索（DeepSeek 官方）</span></label>
+                <label class="field">
+                    <span>搜索结果条数</span>
+                    <input type="number" min="1" max="10" @bind="_searchMax"/>
+                </label>
+            </div>
+
+            <div class="button-row">
+                <button type="button" class="btn primary" @onclick="SaveAiAsync">保存</button>
+                <button type="button" class="btn ghost" @onclick="TestAiAsync" disabled="@_busy">测试连接</button>
+                <button type="button" class="btn ghost" @onclick="TestSearchAsync" disabled="@_busy">测试搜索</button>
+                <button type="button" class="btn ghost danger-text" @onclick="ClearKeyAsync">清除 Key</button>
+                <button type="button" class="btn ghost" @onclick="ReloadAiAsync" disabled="@_busy">重新读取</button>
+            </div>
+            <p class="muted small">
+                Key 使用 ASP.NET Data Protection 加密后存本地 SQLite（密钥环在 data/keys），不会写日志、不会随备份包外泄明文。
+                也可用环境变量 <code>MICA_AI_API_KEY</code> 覆盖。
+            </p>
+        </section>
+    }
+
+    @if (_tab == "prompts")
+    {
+        <section class="panel">
+            <h2>提示词</h2>
+            @foreach (var definition in AiPromptCatalog.Definitions)
+            {
+                <h3>@definition.Name</h3>
+                <p class="muted small">@definition.Description</p>
+                <p class="muted small">可用变量：@string.Join("、", definition.Variables)</p>
+                <label class="field">
+                    <span>System</span>
+                    <textarea rows="4" @bind="_promptSystem"></textarea>
+                </label>
+                <label class="field">
+                    <span>User 模板</span>
+                    <textarea rows="12" @bind="_promptUser"></textarea>
+                </label>
+                <div class="button-row">
+                    <button type="button" class="btn primary" @onclick="() => SavePromptAsync(definition.Id)">保存</button>
+                    <button type="button" class="btn ghost" @onclick="() => ResetPromptAsync(definition.Id)">恢复默认</button>
+                </div>
+            }
+        </section>
+    }
+
+    @if (_tab == "maintenance")
+    {
+        <section class="panel">
+            <h2>数据维护</h2>
+            <div class="button-row">
+                <button type="button" class="btn primary" @onclick="CreateBackupAsync" disabled="@_busy">创建备份</button>
+                <a class="btn ghost" href="/api/export/csv">导出全部 CSV</a>
+                <button type="button" class="btn ghost" @onclick="FillHashesAsync" disabled="@_busy">补算缺失指纹</button>
+                <button type="button" class="btn ghost" @onclick="RefreshMissingAsync" disabled="@_busy">刷新文件缺失状态</button>
+                <button type="button" class="btn ghost" @onclick="CleanupCoversAsync" disabled="@_busy">清理无用封面</button>
+            </div>
+
+            <h3>备份</h3>
+            <table class="grid compact">
+                <thead><tr><th>文件</th><th style="width:100px">大小</th><th style="width:160px">时间</th><th style="width:120px"></th></tr></thead>
+                <tbody>
+                    @foreach (var backup in _backups)
+                    {
+                        <tr>
+                            <td class="mono ellipsis">@backup.Name</td>
+                            <td>@Game.FormatSize(backup.Size)</td>
+                            <td>@backup.CreatedAt.ToString("yyyy-MM-dd HH:mm")</td>
+                            <td>
+                                <a class="btn ghost small" href="/api/backups/@Uri.EscapeDataString(backup.Name)">下载</a>
+                                <button type="button" class="btn ghost small danger-text" @onclick="() => DeleteBackup(backup)">删除</button>
+                            </td>
+                        </tr>
+                    }
+                    @if (_backups.Count == 0)
+                    {
+                        <tr><td colspan="4" class="grid-empty">暂无备份。</td></tr>
+                    }
+                </tbody>
+            </table>
+
+            <h3>恢复</h3>
+            <p class="muted small">上传 .db 备份文件覆盖当前数据库；恢复前会自动再备份一次当前库。恢复后建议重启容器。</p>
+            <label class="btn ghost file-btn">
+                选择备份文件
+                <InputFile OnChange="RestoreAsync" accept=".db,.sqlite,.sqlite3" class="hidden-input"/>
+            </label>
+        </section>
+    }
+
+    @if (_tab == "about")
+    {
+        <section class="panel">
+            <h2>关于</h2>
+            <p><strong>Mica ROM Manager（Web / Docker）</strong> @AppInfo.Version</p>
+            <p class="muted">面向 NAS 的 ROM 管理工具：扫描、去重、元数据、封面、筛选与 AI 刮削。</p>
+            <p class="muted small">
+                本项目独立于 Windows 桌面版实现；数据库结构与桌面版不保证兼容。
+                浏览器试玩（RetroArch / EmulatorJS）为后续计划。
+            </p>
+            <p class="muted small">License: MIT</p>
+        </section>
+    }
+</div>
+
+@code {
+    private static readonly Dictionary<string, string> Tabs = new()
+    {
+        ["general"] = "常规",
+        ["libraries"] = "库",
+        ["lookup"] = "词典库",
+        ["ai"] = "AI",
+        ["prompts"] = "提示词",
+        ["maintenance"] = "数据维护",
+        ["about"] = "关于",
+    };
+
+    [SupplyParameterFromQuery(Name = "tab")]
+    public string? TabParam { get; set; }
+
+    private string _tab = "general";
+    private string _message = "";
+    private string _messageKind = "";
+    private bool _busy;
+
+    private List<Library> _libraries = new();
+    private string _newLibraryName = "";
+    private string _newLibraryRoot = "";
+    private bool _deleteLibraryGames;
+
+    private string _lookupKind = LookupRepository.Region;
+    private List<(string Value, int Usage)> _lookupValues = new();
+    private string _newLookup = "";
+    private readonly Dictionary<string, string> _renameInputs = new(StringComparer.Ordinal);
+
+    private string _aiBaseUrl = "";
+    private string _aiModel = "";
+    private string _aiKey = "";
+    private string _maskedKey = "";
+    private int _aiTimeout = AiOptions.DefaultTimeoutSeconds;
+    private int _aiBatch = AiOptions.DefaultBatchLimit;
+    private bool _searchEnabled;
+    private int _searchMax = AiSearchOptions.DefaultMaxResults;
+
+    private string _promptSystem = "";
+    private string _promptUser = "";
+    private List<BackupFile> _backups = new();
+
+    protected override void OnParametersSet()
+    {
+        _tab = Tabs.ContainsKey(TabParam ?? "") ? TabParam! : "general";
+        LoadTab();
+    }
+
+    private void LoadTab()
+    {
+        switch (_tab)
+        {
+            case "libraries":
+                _libraries = Libraries.ListAll().ToList();
+                break;
+            case "lookup":
+                LoadLookupValues();
+                break;
+            case "ai":
+                LoadAi();
+                break;
+            case "prompts":
+                _promptSystem = Prompts.SystemFor(AiPromptCatalog.MetadataId);
+                _promptUser = Prompts.UserFor(AiPromptCatalog.MetadataId);
+                break;
+            case "maintenance":
+                _backups = Backups.List().ToList();
+                break;
+        }
+    }
+
+    private void SwitchTab(string tab)
+    {
+        _tab = tab;
+        _message = "";
+        Nav.NavigateTo($"/settings?tab={tab}", replace: true);
+        LoadTab();
+    }
+
+    private void SetMessage(string message, string kind = "") 
+    {
+        _message = message;
+        _messageKind = kind;
+    }
+
+    // ---------- 库 ----------
+    private async Task AddLibraryAsync()
+    {
+        var (ok, message) = Libraries.Add(_newLibraryName, _newLibraryRoot);
+        SetMessage(message, ok ? "" : "danger");
+        if (!ok) return;
+
+        _newLibraryName = "";
+        _newLibraryRoot = "";
+        _libraries = Libraries.ListAll().ToList();
+        await Task.CompletedTask;
+    }
+
+    private async Task DeleteLibraryAsync(Library library)
+    {
+        if (!await Confirm($"删除库「{library.Name}」？" + (_deleteLibraryGames ? "游戏记录会一起删除。" : "游戏记录会保留但失去库归属。")))
+            return;
+
+        var (ok, message) = Libraries.Delete(library.Id, _deleteLibraryGames);
+        SetMessage(message, ok ? "" : "danger");
+        _libraries = Libraries.ListAll().ToList();
+    }
+
+    // ---------- 词典 ----------
+    private void OnLookupKindChanged(ChangeEventArgs args)
+    {
+        _lookupKind = args.Value?.ToString() ?? LookupRepository.Region;
+        LoadLookupValues();
+    }
+
+    private void LoadLookupValues()
+    {
+        _lookupValues = Lookups.List(_lookupKind)
+            .Select(value => (value, Lookups.CountUsage(_lookupKind, value)))
+            .ToList();
+        _renameInputs.Clear();
+        foreach (var item in _lookupValues) _renameInputs[item.Value] = item.Value;
+    }
+
+    private string GetRenameValue(string value) =>
+        _renameInputs.TryGetValue(value, out var text) ? text : value;
+
+    private void SetRenameValue(string oldValue, ChangeEventArgs args) =>
+        _renameInputs[oldValue] = args.Value?.ToString() ?? "";
+
+    private async Task AddLookupAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_newLookup)) return;
+        Lookups.Add(_lookupKind, _newLookup.Trim());
+        _newLookup = "";
+        SetMessage("已添加。");
+        LoadLookupValues();
+        await Task.CompletedTask;
+    }
+
+    private async Task RenameLookupAsync((string Value, int Usage) item)
+    {
+        var newValue = GetRenameValue(item.Value).Trim();
+        if (newValue.Length == 0 || newValue == item.Value)
+        {
+            SetMessage("新名称没有变化。", "warning");
+            return;
+        }
+
+        var (ok, message) = Lookups.Rename(_lookupKind, item.Value, newValue);
+        SetMessage(message, ok ? "" : "danger");
+        LoadLookupValues();
+        await Task.CompletedTask;
+    }
+
+    private async Task DeleteLookupAsync((string Value, int Usage) item)
+    {
+        var (ok, message) = Lookups.Delete(_lookupKind, item.Value);
+        SetMessage(message, ok ? "" : "danger");
+        LoadLookupValues();
+        await Task.CompletedTask;
+    }
+
+    // ---------- AI ----------
+    private void LoadAi()
+    {
+        _aiBaseUrl = SettingsRepo.Get(AiOptions.BaseUrlKey) ?? "";
+        _aiModel = SettingsRepo.Get(AiOptions.ModelKey) ?? "";
+        _aiTimeout = SettingsRepo.GetInt(AiOptions.TimeoutKey, AiOptions.DefaultTimeoutSeconds);
+        _aiBatch = SettingsRepo.GetInt(AiOptions.BatchLimitKey, AiOptions.DefaultBatchLimit);
+        _maskedKey = AiOptions.MaskedKey(SettingsRepo, Protector);
+        _aiKey = "";
+        _searchEnabled = SettingsRepo.GetBool(AiSearchOptions.EnabledKey);
+        _searchMax = SettingsRepo.GetInt(AiSearchOptions.MaxResultsKey, AiSearchOptions.DefaultMaxResults);
+    }
+
+    private Task ReloadAiAsync()
+    {
+        LoadAi();
+        SetMessage("已重新读取当前配置。");
+        return Task.CompletedTask;
+    }
+
+    private async Task SaveAiAsync()
+    {
+        SettingsRepo.Set(AiOptions.BaseUrlKey, _aiBaseUrl.Trim());
+        SettingsRepo.Set(AiOptions.ModelKey, _aiModel.Trim());
+        SettingsRepo.Set(AiOptions.TimeoutKey, _aiTimeout.ToString());
+        SettingsRepo.Set(AiOptions.BatchLimitKey, _aiBatch.ToString());
+        SettingsRepo.Set(AiSearchOptions.EnabledKey, _searchEnabled.ToString());
+        SettingsRepo.Set(AiSearchOptions.MaxResultsKey, _searchMax.ToString());
+        if (!string.IsNullOrWhiteSpace(_aiKey)) AiOptions.SaveApiKey(SettingsRepo, Protector, _aiKey);
+
+        SetMessage("AI 设置已保存。");
+        LoadAi();
+        await Task.CompletedTask;
+    }
+
+    private async Task ClearKeyAsync()
+    {
+        AiOptions.SaveApiKey(SettingsRepo, Protector, null);
+        SetMessage("已清除 API Key。");
+        LoadAi();
+        await Task.CompletedTask;
+    }
+
+    private async Task TestAiAsync()
+    {
+        _busy = true;
+        try
+        {
+            var result = await Ai.CompleteAsync("你是连接测试助手，只回复 OK。", "只回复 OK。", CancellationToken.None);
+            SetMessage(result.Success
+                ? $"连接成功（{result.Elapsed.TotalSeconds:0.0}s）：{result.Content.Trim()}"
+                : $"连接失败：{result.Error}", result.Success ? "" : "danger");
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task TestSearchAsync()
+    {
+        _busy = true;
+        try
+        {
+            var result = await Search.SearchAsync("超级马里奥 发售年份", 3, CancellationToken.None);
+            if (!result.Success)
+            {
+                SetMessage($"搜索失败：{result.Error}", "danger");
+                return;
+            }
+
+            var first = result.Results.FirstOrDefault();
+            SetMessage($"搜索成功，返回 {result.Results.Count} 条" +
+                       (first is null ? "。" : $"；首条来自 {first.SiteName}：{first.Title}"));
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    // ---------- 提示词 ----------
+    private async Task SavePromptAsync(string id)
+    {
+        Prompts.Save(id, _promptSystem, _promptUser);
+        SetMessage("提示词已保存。");
+        await Task.CompletedTask;
+    }
+
+    private async Task ResetPromptAsync(string id)
+    {
+        Prompts.Reset(id);
+        _promptSystem = Prompts.SystemFor(id);
+        _promptUser = Prompts.UserFor(id);
+        SetMessage("已恢复默认。");
+        await Task.CompletedTask;
+    }
+
+    // ---------- 维护 ----------
+    private async Task CreateBackupAsync()
+    {
+        _busy = true;
+        try
+        {
+            var backup = Backups.Create("manual");
+            _backups = Backups.List().ToList();
+            SetMessage($"已创建备份：{backup.Name}");
+        }
+        catch (Exception ex)
+        {
+            SetMessage($"备份失败：{ex.Message}", "danger");
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task DeleteBackup(BackupFile backup)
+    {
+        Backups.Delete(backup.Name);
+        _backups = Backups.List().ToList();
+        await Task.CompletedTask;
+    }
+
+    private async Task RestoreAsync(InputFileChangeEventArgs args)
+    {
+        if (!await Confirm("用所选备份覆盖当前数据库？恢复前会自动备份当前库。")) return;
+
+        try
+        {
+            await using var stream = args.File.OpenReadStream(200L * 1024 * 1024);
+            var (ok, message) = Backups.Restore(stream, args.File.Name);
+            SetMessage(message, ok ? "" : "danger");
+        }
+        catch (Exception ex)
+        {
+            SetMessage($"恢复失败：{ex.Message}", "danger");
+        }
+    }
+
+    private async Task FillHashesAsync()
+    {
+        _busy = true;
+        try
+        {
+            var games = Games.ListAll().Where(game => string.IsNullOrWhiteSpace(game.RomHash)).ToList();
+            var filled = await Task.Run(() =>
+            {
+                var count = 0;
+                foreach (var game in games)
+                {
+                    var hash = RomHasher.Compute(game.RomPath);
+                    if (hash.Length == 0) continue;
+                    Games.SetHash(game.Id, hash);
+                    count++;
+                }
+
+                return count;
+            });
+            SetMessage($"已补算 {filled} 条指纹（共 {games.Count} 条待处理）。");
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task RefreshMissingAsync()
+    {
+        _busy = true;
+        try
+        {
+            var games = Games.ListAll();
+            var missing = games.Where(game => !File.Exists(game.RomPath)).Select(game => game.Id).ToList();
+            var present = games.Where(game => File.Exists(game.RomPath) && game.Missing).Select(game => game.Id).ToList();
+            if (missing.Count > 0) Games.SetMissing(missing, true);
+            if (present.Count > 0) Games.SetMissing(present, false);
+            SetMessage($"已更新：缺失 {missing.Count} 条，恢复 {present.Count} 条。");
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task CleanupCoversAsync()
+    {
+        var referenced = Games.ListAll().Select(game => game.CoverFile);
+        var removed = Covers.CleanupOrphans(referenced);
+        SetMessage($"已清理 {removed} 个无用封面。");
+        await Task.CompletedTask;
+    }
+
+    private async Task<bool> Confirm(string message)
+    {
+        try
+        {
+            return await JS.InvokeAsync<bool>("micaConfirm", message);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string KindName(string kind) => kind switch
+    {
+        LookupRepository.Region => "区域",
+        LookupRepository.Language => "语言",
+        LookupRepository.Genre => "类型",
+        LookupRepository.Publisher => "发行商",
+        LookupRepository.Developer => "开发商",
+        LookupRepository.Tag => "标签",
+        LookupRepository.Platform => "平台",
+        _ => kind,
+    };
+}

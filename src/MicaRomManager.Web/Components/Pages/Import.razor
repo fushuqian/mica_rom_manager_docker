@@ -1,0 +1,228 @@
+@page "/import"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inject LibraryRepository Libraries
+@inject ScanCoordinator Scan
+@inject LibraryRootPolicy RootPolicy
+@inject NavigationManager Nav
+@implements IDisposable
+
+<PageTitle>扫描 / 导入 · Mica ROM Manager</PageTitle>
+
+<div class="page">
+    <div class="page-head">
+        <div>
+            <h1>扫描 / 导入</h1>
+            <p class="muted">把容器内的 ROM 目录登记为库，扫描后自动识别平台、计算指纹并去重。</p>
+        </div>
+        <a class="btn ghost" href="/">返回游戏库</a>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_message))
+    {
+        <div class="alert">@_message</div>
+    }
+
+    <div class="two-column">
+        <section class="panel">
+            <h2>库目录</h2>
+            @if (_libraries.Count == 0)
+            {
+                <p class="muted">还没有库目录。在右侧添加一个，例如 <code>/roms</code> 或 <code>/roms/nes</code>。</p>
+            }
+            else
+            {
+                <table class="grid compact">
+                    <thead>
+                        <tr><th>名称</th><th>容器内路径</th><th style="width:70px">游戏</th><th style="width:70px">可写</th><th style="width:150px"></th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var library in _libraries)
+                        {
+                            <tr>
+                                <td>@library.Name</td>
+                                <td class="mono ellipsis" title="@library.RootPath">@library.RootPath</td>
+                                <td>@library.GameCount</td>
+                                <td>@(library.Writable ? "是" : "只读")</td>
+                                <td>
+                                    <button type="button" class="btn ghost small" @onclick="() => SelectLibrary(library)"
+                                            disabled="@Scan.IsRunning">扫描</button>
+                                    <button type="button" class="btn ghost small danger-text" @onclick="() => DeleteLibraryAsync(library)"
+                                            disabled="@Scan.IsRunning">删除</button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+
+            <h3>添加库目录</h3>
+            <div class="form-inline">
+                <label class="field">
+                    <span>名称（可空）</span>
+                    <input type="text" @bind="_newName" placeholder="如 NES / 掌机合集"/>
+                </label>
+                <label class="field grow">
+                    <span>容器内绝对路径 *</span>
+                    <input type="text" @bind="_newRoot" placeholder="/roms/nes"/>
+                </label>
+                <button type="button" class="btn primary" @onclick="AddLibraryAsync">添加</button>
+            </div>
+            <p class="muted small">
+                路径是 <strong>容器内</strong> 的路径。compose 里 <code>${ROM_ROOT}:/roms</code> 对应宿主目录；
+                需要整理/移动文件时挂载为可写，只读挂载时会自动禁用写操作。
+            </p>
+        </section>
+
+        <section class="panel">
+            <h2>扫描</h2>
+            @if (_selected is null)
+            {
+                <p class="muted">先在左侧选择一个库，再开始扫描。</p>
+            }
+            else
+            {
+                <p>当前库：<strong>@_selected.Name</strong> <span class="muted mono">@_selected.RootPath</span></p>
+                <div class="form-grid">
+                    <label class="field checkbox-field"><input type="checkbox" @bind="_recursive"/> <span>递归子目录</span></label>
+                    <label class="field checkbox-field"><input type="checkbox" @bind="_markMissing"/> <span>把找不到的文件标记为缺失</span></label>
+                    <label class="field span2">
+                        <span>只扫描子目录（可空，如 <code>nes</code>）</span>
+                        <input type="text" @bind="_subFolder"/>
+                    </label>
+                </div>
+
+                <div class="button-row">
+                    <button type="button" class="btn primary" @onclick="StartScanAsync" disabled="@Scan.IsRunning">开始扫描</button>
+                    <button type="button" class="btn ghost" @onclick="Scan.Cancel" disabled="@(!Scan.IsRunning)">取消</button>
+                </div>
+
+                <div class="scan-progress">
+                    <div class="progress">
+                        <div class="progress-bar" style="width:@(Scan.Progress.Percent.ToString("0.0"))%"></div>
+                    </div>
+                    <div class="muted small">
+                        @Scan.Progress.Message
+                        @if (Scan.Progress.Total > 0)
+                        {
+                            <span>（@Scan.Progress.Done / @Scan.Progress.Total）</span>
+                        }
+                    </div>
+                    <div class="scan-stats">
+                        <span>新增 <b>@Scan.Progress.Added</b></span>
+                        <span>重复 <b>@Scan.Progress.Duplicate</b></span>
+                        <span>错误 <b>@Scan.Progress.Errors</b></span>
+                        <span>标记缺失 <b>@Scan.Progress.MissingMarked</b></span>
+                    </div>
+                </div>
+
+                @if (Scan.Progress.Kind == ScanStateKind.Completed && Scan.Progress.Added > 0)
+                {
+                    <a class="btn ghost" href="/">去游戏库查看结果</a>
+                }
+            }
+        </section>
+    </div>
+</div>
+
+@code {
+    private List<Library> _libraries = new();
+    private Library? _selected;
+    private string _newName = "";
+    private string _newRoot = "";
+    private string _message = "";
+    private bool _recursive = true;
+    private bool _markMissing = true;
+    private string _subFolder = "";
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        LoadLibraries();
+        _selected = _libraries.FirstOrDefault();
+        _timer = new System.Threading.Timer(async _ => await PollAsync(), null, 500, 700);
+    }
+
+    private void LoadLibraries()
+    {
+        _libraries = Libraries.ListAll().ToList();
+        if (_selected is not null)
+            _selected = _libraries.FirstOrDefault(library => library.Id == _selected.Id) ?? _libraries.FirstOrDefault();
+    }
+
+    private void SelectLibrary(Library library) => _selected = library;
+
+    private async Task AddLibraryAsync()
+    {
+        var root = _newRoot.Trim();
+        var check = RootPolicy.Check(root);
+        if (!check.Ok)
+        {
+            _message = check.Message;
+            return;
+        }
+
+        var (ok, message) = Libraries.Add(_newName, root);
+        _message = message;
+        if (!ok) return;
+
+        _newName = "";
+        _newRoot = "";
+        LoadLibraries();
+        _selected = _libraries.FirstOrDefault();
+        await Task.CompletedTask;
+    }
+
+    private async Task DeleteLibraryAsync(Library library)
+    {
+        if (Scan.IsRunning)
+        {
+            _message = "扫描进行中，不能删除库。";
+            return;
+        }
+
+        var (ok, message) = Libraries.Delete(library.Id, deleteGames: false);
+        _message = message + (ok ? "（游戏记录保留，可在游戏库中筛选清理）" : "");
+        LoadLibraries();
+        await Task.CompletedTask;
+    }
+
+    private async Task StartScanAsync()
+    {
+        if (_selected is null) return;
+
+        var (ok, message) = Scan.Start(new ScanOptions
+        {
+            LibraryId = _selected.Id,
+            Recursive = _recursive,
+            MarkMissing = _markMissing,
+            SubFolder = string.IsNullOrWhiteSpace(_subFolder) ? null : _subFolder.Trim(),
+        });
+
+        _message = message;
+        if (ok)
+        {
+            _selected = _libraries.FirstOrDefault(library => library.Id == _selected.Id);
+            await Task.CompletedTask;
+        }
+    }
+
+    private async Task PollAsync()
+    {
+        try
+        {
+            await InvokeAsync(() =>
+            {
+                if (Scan.Progress.Kind is ScanStateKind.Completed or ScanStateKind.Failed or ScanStateKind.Canceled)
+                    LoadLibraries();
+                StateHasChanged();
+            });
+        }
+        catch
+        {
+            // 页面释放后忽略
+        }
+    }
+
+    public void Dispose() => _timer?.Dispose();
+}

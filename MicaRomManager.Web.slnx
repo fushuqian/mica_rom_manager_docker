@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/MicaRomManager.Core/MicaRomManager.Core.csproj" />
+    <Project Path="src/MicaRomManager.Web/MicaRomManager.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/MicaRomManager.Core.Tests/MicaRomManager.Core.Tests.csproj" />
+    <Project Path="tests/MicaRomManager.Web.Tests/MicaRomManager.Web.Tests.csproj" />
+  </Folder>
+</Solution>

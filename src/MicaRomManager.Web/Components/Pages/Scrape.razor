@@ -1,0 +1,289 @@
+@page "/scrape"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inject GameRepository Games
+@inject PlatformRepository Platforms
+@inject ScrapeService Scraper
+@inject IAiChatClient Ai
+@inject AiSearchService Search
+@inject NavigationManager Nav
+@implements IDisposable
+
+<PageTitle>AI 刮削 · Mica ROM Manager</PageTitle>
+
+<div class="page">
+    <div class="page-head">
+        <div>
+            <h1>AI 刮削</h1>
+            <p class="muted">先用文件名解析本地信息，再按需调用 AI 补全；结果只进入预览，勾选后才写库。</p>
+        </div>
+        <a class="btn ghost" href="/">返回游戏库</a>
+    </div>
+
+    @if (!Ai.Options.IsConfigured)
+    {
+        <div class="alert warning">
+            还没有配置 AI。可以只做本地文件名解析，或先到 <a href="/settings?tab=ai">设置 → AI</a> 填写 BaseUrl / Key / 模型。
+        </div>
+    }
+
+    <section class="panel">
+        <div class="form-inline">
+            <label class="field grow">
+                <span>在结果中筛选</span>
+                <input type="search" @bind="_keyword" @bind:event="oninput" placeholder="标题关键词"/>
+            </label>
+            <label class="field">
+                <span>平台</span>
+                <select @bind="_platform">
+                    <option value="">全部平台</option>
+                    @foreach (var platform in _platforms) { <option value="@platform.Name">@platform.Name</option> }
+                </select>
+            </label>
+            <label class="field checkbox-field"><input type="checkbox" @bind="_useAi"/> <span>使用 AI</span></label>
+            <label class="field checkbox-field"><input type="checkbox" @bind="_useSearch"/> <span>联网搜索</span></label>
+            <label class="field checkbox-field"><input type="checkbox" @bind="_overwrite"/> <span>覆盖已有字段</span></label>
+            <button type="button" class="btn ghost" @onclick="LoadCandidatesAsync">刷新候选</button>
+        </div>
+
+        <div class="toolbar-row">
+            <button type="button" class="btn primary" @onclick="RunAsync" disabled="@(_running || _selected.Count == 0)">
+                开始刮削（@_selected.Count 款）
+            </button>
+            <button type="button" class="btn ghost" @onclick="Cancel">取消</button>
+            <button type="button" class="btn ghost small" @onclick="SelectAll">全选</button>
+            <button type="button" class="btn ghost small" @onclick="ClearSelection">清空选择</button>
+            <div class="toolbar-spacer"></div>
+            <span class="muted small">@_status</span>
+        </div>
+
+        @if (_running)
+        {
+            <div class="progress">
+                <div class="progress-bar" style="width:@(_progressPercent.ToString("0.0"))%"></div>
+            </div>
+            <p class="muted small">@_progressText</p>
+        }
+    </section>
+
+    @if (_rows.Count > 0)
+    {
+        <section class="panel">
+            <div class="panel-head">
+                <h2>预览（@_rows.Count 条）</h2>
+                <button type="button" class="btn primary" @onclick="ApplyAsync" disabled="@(!_rows.Any(row => row.Selected))">
+                    应用选中（@_rows.Count(row => row.Selected)）
+                </button>
+            </div>
+
+            <table class="grid preview">
+                <thead>
+                    <tr>
+                        <th style="width:34px"></th>
+                        <th>游戏</th>
+                        <th>候选来源</th>
+                        <th>标题</th>
+                        <th>类型</th>
+                        <th>区域</th>
+                        <th>语言</th>
+                        <th>年份</th>
+                        <th>发行商</th>
+                        <th>开发商</th>
+                        <th>简介</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var row in _rows)
+                    {
+                        <tr class="@(row.Selected ? "" : "muted-row")">
+                            <td><input type="checkbox" checked="@row.Selected"
+                                       @onchange="e => row.Selected = e.Value is true"/></td>
+                            <td class="ellipsis" title="@row.Game.RomPath">
+                                @row.Game.Title
+                                @if (!string.IsNullOrWhiteSpace(row.Result.Error))
+                                {
+                                    <div class="danger-text small">@row.Result.Error</div>
+                                }
+                            </td>
+                            <td class="small">@row.Result.Source</td>
+                            <td class="small">@Cell(row, "title", row.Result.Title)</td>
+                            <td class="small">@Cell(row, "genre", row.Result.Genre)</td>
+                            <td class="small">@Cell(row, "region", row.Result.Region)</td>
+                            <td class="small">@Cell(row, "language", row.Result.Language)</td>
+                            <td class="small">@Cell(row, "release_year", row.Result.ReleaseYear?.ToString() ?? "")</td>
+                            <td class="small">@Cell(row, "publisher", row.Result.Publisher)</td>
+                            <td class="small">@Cell(row, "developer", row.Result.Developer)</td>
+                            <td class="small">@Cell(row, "notes", row.Result.Summary)</td>
+                        </tr>
+                        <tr class="field-row">
+                            <td></td>
+                            <td colspan="10">
+                                <details>
+                                    <summary class="small muted">逐字段选择</summary>
+                                    <div class="field-checks">
+                                        @foreach (var field in FieldNames)
+                                        {
+                                            <label class="check inline">
+                                                <input type="checkbox" checked="@row.Fields.Contains(field.Key)"
+                                                       @onchange="e => ToggleField(row, field.Key, e)"/>
+                                                @field.Value
+                                            </label>
+                                        }
+                                    </div>
+                                </details>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </section>
+    }
+</div>
+
+@code {
+    private static readonly Dictionary<string, string> FieldNames = new()
+    {
+        ["title"] = "标题",
+        ["genre"] = "类型",
+        ["region"] = "区域",
+        ["language"] = "语言",
+        ["release_year"] = "年份",
+        ["publisher"] = "发行商",
+        ["developer"] = "开发商",
+        ["notes"] = "简介（仅补空）",
+    };
+
+    private List<Platform> _platforms = new();
+    private List<Game> _candidates = new();
+    private readonly HashSet<long> _selected = new();
+    private List<ScrapePreviewRow> _rows = new();
+    private string _keyword = "";
+    private string _platform = "";
+    private bool _useAi = true;
+    private bool _useSearch;
+    private bool _overwrite;
+    private bool _running;
+    private string _status = "";
+    private string _progressText = "";
+    private double _progressPercent;
+    private CancellationTokenSource? _cts;
+
+    [SupplyParameterFromQuery(Name = "ids")]
+    public string? IdsParam { get; set; }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _platforms = Platforms.ListAll().ToList();
+        if (!string.IsNullOrWhiteSpace(IdsParam))
+        {
+            var ids = IdsParam.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(value => long.TryParse(value, out var id) ? id : 0)
+                .Where(id => id > 0)
+                .ToList();
+            foreach (var game in Games.GetMany(ids))
+            {
+                _candidates.Add(game);
+                _selected.Add(game.Id);
+            }
+        }
+
+        await LoadCandidatesAsync();
+    }
+
+    private async Task LoadCandidatesAsync()
+    {
+        var filter = new GameFilter
+        {
+            Keyword = string.IsNullOrWhiteSpace(_keyword) ? null : _keyword.Trim(),
+            Platform = string.IsNullOrWhiteSpace(_platform) ? null : _platform,
+        };
+        var result = Games.Query(filter, new GameSort("title"), 1, 200);
+        _candidates = result.Items.ToList();
+        _candidates.AddRange(Games.GetMany(_selected.Where(id => _candidates.All(game => game.Id != id)).ToList()));
+        _candidates = _candidates.GroupBy(game => game.Id).Select(group => group.First()).ToList();
+        _status = $"候选 {_candidates.Count} 款（最多 200 条，可用关键词/平台缩小范围）";
+        await Task.CompletedTask;
+    }
+
+    private void SelectAll()
+    {
+        foreach (var game in _candidates) _selected.Add(game.Id);
+    }
+
+    private void ClearSelection() => _selected.Clear();
+
+    private void ToggleField(ScrapePreviewRow row, string field, ChangeEventArgs args)
+    {
+        if (args.Value is true) row.Fields.Add(field);
+        else row.Fields.Remove(field);
+    }
+
+    private async Task RunAsync()
+    {
+        var games = Games.GetMany(_selected.ToList());
+        if (games.Count == 0) return;
+        if (_useAi && !Ai.Options.IsConfigured)
+        {
+            _status = "AI 未配置，将只做文件名解析。";
+        }
+
+        _running = true;
+        _rows = new List<ScrapePreviewRow>();
+        _progressPercent = 0;
+        _cts = new CancellationTokenSource();
+        var progress = new Progress<ScrapeProgress>(p =>
+        {
+            _progressPercent = p.Total == 0 ? 0 : p.Completed * 100.0 / p.Total;
+            _progressText = $"{p.Completed}/{p.Total} · {p.Message}";
+            InvokeAsync(StateHasChanged);
+        });
+
+        try
+        {
+            var results = await Scraper.ScrapeAsync(games, _useAi, _useSearch, _overwrite, progress, _cts.Token);
+            var map = games.ToDictionary(game => game.Id);
+            _rows = results
+                .Where(result => map.ContainsKey(result.GameId))
+                .Select(result => ScrapePreviewRow.Create(map[result.GameId], result))
+                .ToList();
+            _status = $"完成：{_rows.Count} 条候选，其中 {_rows.Count(row => row.Selected)} 条有可应用变化。";
+        }
+        catch (OperationCanceledException)
+        {
+            _status = "已取消。";
+        }
+        catch (Exception ex)
+        {
+            _status = $"刮削失败：{ex.Message}";
+        }
+        finally
+        {
+            _running = false;
+            _cts?.Dispose();
+            _cts = null;
+        }
+    }
+
+    private void Cancel() => _cts?.Cancel();
+
+    private async Task ApplyAsync()
+    {
+        var applied = 0;
+        foreach (var row in _rows.Where(row => row.Selected))
+        {
+            var patch = row.ToPatch();
+            if (!patch.HasAny) continue;
+            Games.UpdateFields(new[] { row.Game.Id }, patch);
+            applied++;
+        }
+
+        _status = $"已应用 {applied} 条。";
+        _rows = new List<ScrapePreviewRow>();
+        await Task.CompletedTask;
+    }
+
+    private static string Cell(ScrapePreviewRow row, string field, string value) =>
+        row.Fields.Contains(field) && !string.IsNullOrWhiteSpace(value) ? value : "—";
+
+    public void Dispose() => _cts?.Dispose();
+}

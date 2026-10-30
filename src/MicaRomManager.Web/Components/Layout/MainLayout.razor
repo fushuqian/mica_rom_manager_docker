@@ -1,0 +1,26 @@
+@inherits LayoutComponentBase
+@inject Db Db
+
+<div class="app-shell">
+    <header class="toolbar">
+        <a class="brand" href="/">MICA ROM MANAGER</a>
+        <nav class="nav">
+            <NavLink class="nav-link" href="/" Match="NavLinkMatch.All">游戏库</NavLink>
+            <NavLink class="nav-link" href="/import">扫描 / 导入</NavLink>
+            <NavLink class="nav-link" href="/scrape">AI 刮削</NavLink>
+            <NavLink class="nav-link" href="/settings">设置</NavLink>
+        </nav>
+        <div class="toolbar-spacer"></div>
+        <span class="muted small">Web 版</span>
+        <a class="btn ghost small" href="/logout">退出</a>
+    </header>
+
+    <main class="app-main">
+        @Body
+    </main>
+
+    <footer class="statusbar">
+        <span>数据目录：@Db.DataDir</span>
+        <span class="statusbar-right">Mica ROM Manager · Docker</span>
+    </footer>
+</div>

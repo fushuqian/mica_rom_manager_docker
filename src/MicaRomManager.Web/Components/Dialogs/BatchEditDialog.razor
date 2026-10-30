@@ -1,0 +1,183 @@
+@* 批量修改：只应用勾选的字段 *@
+@inject GameRepository Games
+@inject PlatformRepository Platforms
+@inject LookupRepository Lookups
+
+<Modal Title="@($"批量编辑 {Ids.Count} 款游戏")" Width="720px" OnClose="CloseAsync">
+    <ChildContent>
+        @if (_error is not null)
+        {
+            <div class="alert danger">@_error</div>
+        }
+        <table class="batch-table">
+            <thead>
+                <tr><th style="width:110px">字段</th><th style="width:44px">修改</th><th>新值</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>平台</td>
+                    <td><input type="checkbox" @bind="_usePlatform"/></td>
+                    <td>
+                        <input type="text" list="batch-platform" @bind="_platform"/>
+                        <datalist id="batch-platform">
+                            @foreach (var platform in _platforms) { <option value="@platform.Name"></option> }
+                        </datalist>
+                    </td>
+                </tr>
+                <tr>
+                    <td>区域</td>
+                    <td><input type="checkbox" @bind="_useRegion"/></td>
+                    <td><input type="text" list="batch-region" @bind="_region"/>
+                        <datalist id="batch-region">@foreach (var value in _regions) { <option value="@value"></option> }</datalist>
+                    </td>
+                </tr>
+                <tr>
+                    <td>语言</td>
+                    <td><input type="checkbox" @bind="_useLanguage"/></td>
+                    <td><input type="text" list="batch-language" @bind="_language"/>
+                        <datalist id="batch-language">@foreach (var value in _languages) { <option value="@value"></option> }</datalist>
+                    </td>
+                </tr>
+                <tr>
+                    <td>类型</td>
+                    <td><input type="checkbox" @bind="_useGenre"/></td>
+                    <td><input type="text" list="batch-genre" @bind="_genre"/>
+                        <datalist id="batch-genre">@foreach (var value in _genres) { <option value="@value"></option> }</datalist>
+                    </td>
+                </tr>
+                <tr>
+                    <td>发行商</td>
+                    <td><input type="checkbox" @bind="_usePublisher"/></td>
+                    <td><input type="text" @bind="_publisher"/></td>
+                </tr>
+                <tr>
+                    <td>开发商</td>
+                    <td><input type="checkbox" @bind="_useDeveloper"/></td>
+                    <td><input type="text" @bind="_developer"/></td>
+                </tr>
+                <tr>
+                    <td>年份</td>
+                    <td><input type="checkbox" @bind="_useYear"/></td>
+                    <td><input type="number" min="1950" max="2100" @bind="_year"/></td>
+                </tr>
+                <tr>
+                    <td>评分</td>
+                    <td><input type="checkbox" @bind="_useRating"/></td>
+                    <td>
+                        <select @bind="_rating">
+                            <option value="0">未评分</option>
+                            @for (var star = 1; star <= 5; star++)
+                            {
+                                <option value="@star">@(new string('★', star))</option>
+                            }
+                        </select>
+                    </td>
+                </tr>
+                <tr>
+                    <td>状态</td>
+                    <td><input type="checkbox" @bind="_useStatus"/></td>
+                    <td>
+                        <select @bind="_status">
+                            @foreach (var value in GameStatus.All) { <option value="@value">@value</option> }
+                        </select>
+                    </td>
+                </tr>
+                <tr>
+                    <td>标签（替换）</td>
+                    <td><input type="checkbox" @bind="_useTags"/></td>
+                    <td><input type="text" @bind="_tags" placeholder="逗号分隔，会整体替换"/></td>
+                </tr>
+                <tr>
+                    <td>特注</td>
+                    <td><input type="checkbox" @bind="_useSpecialNote"/></td>
+                    <td><input type="text" @bind="_specialNote"/></td>
+                </tr>
+                <tr>
+                    <td>收藏</td>
+                    <td><input type="checkbox" @bind="_useFavorite"/></td>
+                    <td><input type="checkbox" @bind="_favorite"/> 设为收藏</td>
+                </tr>
+            </tbody>
+        </table>
+    </ChildContent>
+
+    <Footer>
+        <div class="modal-actions">
+            <button type="button" class="btn ghost" @onclick="CloseAsync">取消</button>
+            <button type="button" class="btn primary" @onclick="ApplyAsync">应用</button>
+        </div>
+    </Footer>
+</Modal>
+
+@code {
+    [Parameter] public IReadOnlyCollection<long> Ids { get; set; } = Array.Empty<long>();
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback OnApplied { get; set; }
+
+    private List<Platform> _platforms = new();
+    private IReadOnlyList<string> _regions = Array.Empty<string>();
+    private IReadOnlyList<string> _languages = Array.Empty<string>();
+    private IReadOnlyList<string> _genres = Array.Empty<string>();
+
+    private bool _usePlatform, _useRegion, _useLanguage, _useGenre, _usePublisher, _useDeveloper;
+    private bool _useYear, _useRating, _useStatus, _useTags, _useSpecialNote, _useFavorite;
+    private string _platform = "", _region = "", _language = "", _genre = "";
+    private string _publisher = "", _developer = "", _tags = "", _specialNote = "";
+    private int? _year;
+    private int _rating;
+    private string _status = GameStatus.NotPlayed;
+    private bool _favorite = true;
+    private string? _error;
+
+    protected override void OnInitialized()
+    {
+        _platforms = Platforms.ListAll().ToList();
+        _regions = Lookups.List(LookupRepository.Region);
+        _languages = Lookups.List(LookupRepository.Language);
+        _genres = Lookups.List(LookupRepository.Genre);
+    }
+
+    private async Task ApplyAsync()
+    {
+        if (Ids.Count == 0) return;
+
+        var patch = new GamePatch
+        {
+            Platform = _usePlatform ? _platform.Trim() : null,
+            Region = _useRegion ? _region.Trim() : null,
+            Language = _useLanguage ? _language.Trim() : null,
+            Genre = _useGenre ? _genre.Trim() : null,
+            Publisher = _usePublisher ? _publisher.Trim() : null,
+            Developer = _useDeveloper ? _developer.Trim() : null,
+            ReleaseYear = _useYear ? _year : null,
+            Rating = _useRating ? _rating : null,
+            Status = _useStatus ? _status : null,
+            Tags = _useTags ? NormalizeTags(_tags) : null,
+            SpecialNote = _useSpecialNote ? _specialNote.Trim() : null,
+            Favorite = _useFavorite ? _favorite : null,
+        };
+
+        if (!patch.HasAny)
+        {
+            _error = "至少勾选一个要修改的字段。";
+            return;
+        }
+
+        try
+        {
+            Games.UpdateFields(Ids, patch);
+            if (_usePlatform && !string.IsNullOrWhiteSpace(_platform)) Platforms.Ensure(_platform.Trim());
+            await OnApplied.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = $"应用失败：{ex.Message}";
+        }
+    }
+
+    private static string NormalizeTags(string raw) => string.Join(",",
+        raw.Split(new[] { ',', '，', ';', '；' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase));
+
+    private Task CloseAsync() => OnClose.InvokeAsync();
+}
