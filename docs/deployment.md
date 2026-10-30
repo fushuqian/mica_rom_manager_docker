@@ -20,7 +20,7 @@ vi .env
 
 ```ini
 MICA_PASSWORD=一个至少 8 位的密码
-ROM_ROOT=/vol2/1000/roms        # 宿主机 ROM 目录（只读挂载）
+ROM_ROOT=/mnt/roms              # 宿主机 ROM 目录（只读挂载）
 PUID=1000                        # 拥有 ROM 目录的用户
 PGID=1000
 ```
@@ -39,7 +39,7 @@ docker compose logs -f mica      # 看到 "Now listening on: http://[::]:8080"
 容器以 `PUID:PGID` 运行。`/data` 由 root 创建时，entrypoint 会自动 `chown`；ROM 目录建议：
 
 ```bash
-chown -R 1000:1000 /vol2/1000/roms
+chown -R 1000:1000 /mnt/roms
 ```
 
 只读挂载（`:ro`）时：
